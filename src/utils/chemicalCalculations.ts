@@ -30,9 +30,16 @@ export function calculateFormula(atoms: Atom[]): string {
   for (const a of atoms) {
     counts[a.symbol] = (counts[a.symbol] || 0) + 1;
   }
-  // Hill system: C first, then H, then alphabetical
+  const netCharge = atoms.reduce((sum, a) => sum + (a.formalCharge || 0), 0);
+
+  // Ammonium specific convention (N before H) or general Hill system
   let formula = '';
-  if (counts['C']) {
+  if (!counts['C'] && counts['N'] && counts['H']) {
+    formula += `N${counts['N'] > 1 ? counts['N'] : ''}`;
+    delete counts['N'];
+    formula += `H${counts['H'] > 1 ? counts['H'] : ''}`;
+    delete counts['H'];
+  } else if (counts['C']) {
     formula += `C${counts['C'] > 1 ? counts['C'] : ''}`;
     delete counts['C'];
     if (counts['H']) {
@@ -40,10 +47,17 @@ export function calculateFormula(atoms: Atom[]): string {
       delete counts['H'];
     }
   }
+
   const remaining = Object.keys(counts).sort();
   for (const el of remaining) {
     formula += `${el}${counts[el] > 1 ? counts[el] : ''}`;
   }
+
+  if (netCharge !== 0) {
+    const chargeStr = netCharge > 0 ? (netCharge === 1 ? '+' : `${netCharge}+`) : (netCharge === -1 ? '-' : `${Math.abs(netCharge)}-`);
+    formula += chargeStr;
+  }
+
   return formula;
 }
 
@@ -89,6 +103,15 @@ export function parseSdf(sdfText: string, moleculeName: string = 'Custom Molecul
     const symbol = line.substring(31, 34).trim();
     const props = getElementProps(symbol);
 
+    const chargeCode = parseInt(line.substring(36, 39).trim() || '0', 10);
+    let initialCharge: number | undefined = undefined;
+    if (chargeCode === 3) initialCharge = 1;
+    else if (chargeCode === 2) initialCharge = 2;
+    else if (chargeCode === 1) initialCharge = 3;
+    else if (chargeCode === 5) initialCharge = -1;
+    else if (chargeCode === 6) initialCharge = -2;
+    else if (chargeCode === 7) initialCharge = -3;
+
     atoms.push({
       id: i,
       symbol,
@@ -98,6 +121,7 @@ export function parseSdf(sdfText: string, moleculeName: string = 'Custom Molecul
       color: props.color,
       radius: props.radius,
       label: `${symbol}${i + 1}`,
+      ...(initialCharge !== undefined ? { formalCharge: initialCharge } : {}),
     });
   }
 
@@ -119,6 +143,30 @@ export function parseSdf(sdfText: string, moleculeName: string = 'Custom Molecul
         atom2,
         order,
       });
+    }
+  }
+
+  // Parse property block for formal charges: M  CHG
+  const propStart = bondStart + numBonds;
+  for (let i = propStart; i < lines.length; i++) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    if (line === 'M  END' || line.startsWith('$$$$')) break;
+
+    if (line.startsWith('M  CHG')) {
+      const parts = line.split(/\s+/).slice(2); // Skip 'M' and 'CHG'
+      if (parts.length >= 1) {
+        const numEntries = parseInt(parts[0], 10);
+        let ptr = 1;
+        for (let e = 0; e < numEntries && ptr + 1 < parts.length; e++) {
+          const atomIdx = parseInt(parts[ptr], 10) - 1; // 1-based index to 0-based
+          const chargeVal = parseInt(parts[ptr + 1], 10);
+          if (atomIdx >= 0 && atomIdx < atoms.length && !isNaN(chargeVal)) {
+            atoms[atomIdx].formalCharge = chargeVal;
+          }
+          ptr += 2;
+        }
+      }
     }
   }
 

@@ -4,7 +4,7 @@ import { MOLECULES_DATABASE, searchMolecules } from '../../data/molecules';
 import { Search, Sparkles, Filter, AlertCircle, Loader2, ArrowRight, BookOpen, PlusCircle } from 'lucide-react';
 import { parseSdf, calculateFormula, calculateMolecularWeight, detectStereocentersAndAssignCIP } from '../../utils/chemicalCalculations';
 import { AddMoleculeModal } from '../modals/AddMoleculeModal';
-import { analyzeSmilesWithRDKit } from '../../utils/rdkit';
+import { analyzeSmilesWithRDKit, getRDKit } from '../../utils/rdkit';
 
 interface Props {
   currentMolecule: Molecule;
@@ -42,10 +42,120 @@ export const MoleculeLibraryBar: React.FC<Props> = ({ currentMolecule, onSelectM
     return m.category === selectedCategory;
   });
 
-  // Handler to fetch 3D coordinates from PubChem for custom SMILES
-  const handleLoadCustomSmiles = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const query = smilesInput.trim();
+  // Robust SMILES classifier combining RDKit WebAssembly as primary validator
+  // with an OpenSMILES grammar fallback for simple, aromatic, cyclic, and halogen-containing SMILES
+  const checkIfValidSmiles = async (input: string): Promise<boolean> => {
+    // 1. Primary validation: Genuine RDKit C++ WebAssembly kernel if available
+    try {
+      const rdkit = await getRDKit();
+      if (rdkit) {
+        let mol: any = null;
+        try {
+          mol = rdkit.get_mol(input);
+          if (mol) {
+            mol.delete();
+            return true;
+          }
+        } catch {
+          return false;
+        }
+        return false;
+      }
+    } catch {
+      // Fallback if RDKit is initializing or unavailable
+    }
+
+    // 2. Fallback validation:
+    // Chemical names often contain spaces, commas, or hyphenated prefixes (e.g. "tartaric acid", "2-butanol", "1,2-dichloroethane")
+    if (/[\s,]/.test(input)) return false;
+    if (/[A-Za-z]-[A-Za-z0-9]/.test(input) || /^[0-9]+-/.test(input)) return false;
+
+    // Organic OpenSMILES grammar token matcher:
+    // - Explicit bracketed atoms: [Na+], [OH-], [C@@H], [Fe+2]
+    // - Two-letter halogens: Cl, Br
+    // - Organic subset atoms: B, C, N, O, P, S, F, I, H and aromatic b, c, n, o, p, s
+    // - Ring numbers: digits 0-9 and %00-%99
+    // - Bonds, branches, and stereochemistry: =, #, $, :, (, ), /, \, ., +, -, @
+    const organicSmilesGrammar = /^(?:\[[^\]]+\]|Cl|Br|[BCNOFPSIHbcnoFps0-9=\(\)@#\\\/.:%+\-])+$/;
+    if (!organicSmilesGrammar.test(input)) return false;
+
+    // Must contain at least one valid chemical atom token (not just punctuation or numbers like "123" or "===")
+    const containsAtom = /(?:\[[^\]]+\]|Cl|Br|[BCNOFPSIHbcnoFps])/.test(input);
+    return containsAtom;
+  };
+
+  // Helper to load structure once canonical SMILES is determined
+  const loadStructureBySmiles = async (
+    targetSmiles: string,
+    displayName?: string,
+    iupacName?: string
+  ) => {
+    // Validate with RDKit if it looks like a SMILES string
+    const isLikelySmiles = /[=\(\)@\[\]#\\\/]/.test(targetSmiles);
+    if (isLikelySmiles) {
+      const rdkitVal = await analyzeSmilesWithRDKit(targetSmiles);
+      if (rdkitVal && !rdkitVal.isValid && rdkitVal.errorMessage) {
+        throw new Error(rdkitVal.errorMessage);
+      }
+    }
+
+    // Fetch 3D coordinates via server API /api/pubchem/3d
+    const res = await fetch(`/api/pubchem/3d?query=${encodeURIComponent(targetSmiles)}`);
+    if (!res.ok) {
+      throw new Error(`Could not resolve 3D structure for "${targetSmiles}". Please check the SMILES string syntax.`);
+    }
+    const sdfText = await res.text();
+    const parsed = parseSdf(sdfText, targetSmiles);
+
+    if (parsed.atoms.length === 0) {
+      throw new Error('Parsed structure contains 0 atoms.');
+    }
+
+    const formula = calculateFormula(parsed.atoms);
+    const mw = calculateMolecularWeight(parsed.atoms);
+
+    // Automated stereocenter detection and CIP (R)/(S) configuration computation
+    const { stereocenters, updatedAtoms } = detectStereocentersAndAssignCIP(parsed.atoms, parsed.bonds);
+
+    let molName = displayName;
+    if (!molName) {
+      if (targetSmiles === '[NH4+]' || targetSmiles === '[NH4]' || (parsed.atoms.length === 5 && formula === 'NH4+')) {
+        molName = 'Ammonium Ion';
+      } else {
+        molName = targetSmiles.length > 20 ? targetSmiles.substring(0, 18) + '...' : targetSmiles;
+      }
+    }
+
+    const customMolecule: Molecule = {
+      id: `custom-${Date.now()}`,
+      name: molName,
+      iupacName: iupacName || (molName === 'Ammonium Ion' ? 'Azanium (Ammonium)' : `Custom: ${molName}`),
+      formula,
+      molecularWeight: mw,
+      smiles: targetSmiles,
+      description: targetSmiles === '[NH4+]' || molName === 'Ammonium Ion'
+        ? 'Ammonium polyatomic cation [NH4+] with tetrahedral coordination geometry and +1 formal charge.'
+        : `Imported via 3D PubChem coordinate resolver. Identified ${stereocenters.length} stereogenic center(s) with verified CIP (R)/(S) configurations.`,
+      category: 'haloalkane',
+      isChiral: stereocenters.length > 0,
+      stereocentersCount: stereocenters.length,
+      stereocenters,
+      atoms: updatedAtoms,
+      bonds: parsed.bonds,
+    };
+
+    onSelectMolecule(customMolecule);
+  };
+
+  // Handler to fetch 3D coordinates from PubChem for custom SMILES or resolved molecule name
+  const handleLoadCustomSmiles = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+
+    // Priority: user-entered text in SMILES box; fallback to search box query
+    const queryFromSmiles = smilesInput.trim();
+    const queryFromSearch = searchQuery.trim();
+    const query = queryFromSmiles || queryFromSearch;
+
     if (!query) {
       setErrorMessage('Please enter a SMILES string or chemical name.');
       return;
@@ -56,9 +166,10 @@ export const MoleculeLibraryBar: React.FC<Props> = ({ currentMolecule, onSelectM
 
     try {
       // First check if it matches an existing molecule SMILES or name
+      // SMILES matching is strictly case-sensitive ('c1ccccc1' != 'C1CCCCC1'); name/iupac matching is case-insensitive
       const exactMatch = MOLECULES_DATABASE.find(
         (m) =>
-          m.smiles.toLowerCase() === query.toLowerCase() ||
+          m.smiles === query ||
           m.name.toLowerCase() === query.toLowerCase() ||
           m.iupacName.toLowerCase() === query.toLowerCase()
       );
@@ -66,58 +177,46 @@ export const MoleculeLibraryBar: React.FC<Props> = ({ currentMolecule, onSelectM
       if (exactMatch) {
         onSelectMolecule(exactMatch);
         setIsLoadingPubchem(false);
-        setSmilesInput('');
+        if (queryFromSmiles) setSmilesInput('');
         return;
       }
 
-      // Validate with RDKit if it looks like a SMILES string
-      const isLikelySmiles = /[=\(\)@\[\]#\\\/]/.test(query);
-      if (isLikelySmiles) {
-        const rdkitVal = await analyzeSmilesWithRDKit(query);
-        if (rdkitVal && !rdkitVal.isValid && rdkitVal.errorMessage) {
-          throw new Error(rdkitVal.errorMessage);
+      // Check if input is a valid chemical SMILES string
+      const isSmiles = await checkIfValidSmiles(query);
+
+      if (isSmiles) {
+        // Direct working SMILES loading pathway
+        await loadStructureBySmiles(query);
+        setSmilesInput('');
+      } else {
+        // Resolve molecule name through PubChem property service to retrieve canonical SMILES
+        const resolveRes = await fetch(`/api/pubchem/resolve?name=${encodeURIComponent(query)}`);
+        if (!resolveRes.ok) {
+          throw new Error(`Could not resolve molecule name "${query}" via PubChem. Please verify the chemical name or enter its SMILES string.`);
+        }
+
+        const resolvedData = await resolveRes.json();
+        const canonicalSmiles = resolvedData.smiles;
+        const resolvedName = resolvedData.name || query;
+        const resolvedIupac = resolvedData.iupacName || query;
+
+        if (!canonicalSmiles) {
+          throw new Error(`PubChem returned no SMILES structure for "${query}".`);
+        }
+
+        // Pass the resolved canonical SMILES to the existing working loader
+        await loadStructureBySmiles(canonicalSmiles, resolvedName, resolvedIupac);
+
+        // Populate SMILES box with the resolved canonical SMILES if not already typed there
+        if (!queryFromSmiles) {
+          setSmilesInput(canonicalSmiles);
+        } else {
+          setSmilesInput('');
         }
       }
-
-      // Fetch 3D coordinates via server API /api/pubchem/3d
-      const res = await fetch(`/api/pubchem/3d?query=${encodeURIComponent(query)}`);
-      if (!res.ok) {
-        throw new Error(`Could not resolve 3D structure for "${query}". Please check the SMILES string syntax or chemical name.`);
-      }
-      const sdfText = await res.text();
-      const parsed = parseSdf(sdfText, query);
-
-      if (parsed.atoms.length === 0) {
-        throw new Error('Parsed structure contains 0 atoms.');
-      }
-
-      const formula = calculateFormula(parsed.atoms);
-      const mw = calculateMolecularWeight(parsed.atoms);
-
-      // Automated stereocenter detection and CIP (R)/(S) configuration computation
-      const { stereocenters, updatedAtoms } = detectStereocentersAndAssignCIP(parsed.atoms, parsed.bonds);
-
-      const customMolecule: Molecule = {
-        id: `custom-${Date.now()}`,
-        name: query.length > 20 ? query.substring(0, 18) + '...' : query,
-        iupacName: `Custom: ${query}`,
-        formula,
-        molecularWeight: mw,
-        smiles: query,
-        description: `Imported via 3D PubChem coordinate resolver. Identified ${stereocenters.length} stereogenic center(s) with verified CIP (R)/(S) configurations.`,
-        category: 'haloalkane',
-        isChiral: stereocenters.length > 0,
-        stereocentersCount: stereocenters.length,
-        stereocenters,
-        atoms: updatedAtoms,
-        bonds: parsed.bonds,
-      };
-
-      onSelectMolecule(customMolecule);
-      setSmilesInput('');
     } catch (err: any) {
       console.error(err);
-      setErrorMessage(err.message || 'Failed to load 3D coordinates for this SMILES.');
+      setErrorMessage(err.message || 'Failed to load 3D coordinates.');
     } finally {
       setIsLoadingPubchem(false);
     }
@@ -141,6 +240,12 @@ export const MoleculeLibraryBar: React.FC<Props> = ({ currentMolecule, onSelectM
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleLoadCustomSmiles();
+              }
+            }}
             placeholder="Search example molecules (e.g. Alanine, Tartaric, Butanol)..."
             className="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-9.5 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
           />
@@ -163,7 +268,7 @@ export const MoleculeLibraryBar: React.FC<Props> = ({ currentMolecule, onSelectM
 
           <button
             type="submit"
-            disabled={isLoadingPubchem || !smilesInput.trim()}
+            disabled={isLoadingPubchem || (!smilesInput.trim() && !searchQuery.trim())}
             className="px-4 py-2 rounded-xl text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-1.5 shrink-0 shadow-md shadow-cyan-500/20"
           >
             {isLoadingPubchem ? (

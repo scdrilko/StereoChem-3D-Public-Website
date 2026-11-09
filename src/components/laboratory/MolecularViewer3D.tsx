@@ -188,6 +188,24 @@ export const MolecularViewer3D: React.FC<Props> = ({
     cy /= molecule.atoms.length;
     cz /= molecule.atoms.length;
 
+    // Calculate maximum radius from center of mass to detect compact molecules / ions
+    let maxDist = 0;
+    molecule.atoms.forEach((a) => {
+      const d = Math.sqrt((a.x - cx) ** 2 + (a.y - cy) ** 2 + (a.z - cz) ** 2);
+      if (d > maxDist) maxDist = d;
+    });
+    const isCompact = maxDist < 1.8;
+
+    // Adjust camera distance for compact or small molecules to ensure optimal framing
+    if (cameraRef.current) {
+      if (isCompact) {
+        cameraRef.current.position.set(0, 0, 6.2);
+      } else {
+        cameraRef.current.position.set(0, 0, 11);
+      }
+      cameraRef.current.updateProjectionMatrix();
+    }
+
     // Shared Geometries
     const sphereGeoDefault = new THREE.SphereGeometry(1, 32, 32);
     const cylinderGeo = new THREE.CylinderGeometry(1, 1, 1, 24);
@@ -283,14 +301,44 @@ export const MolecularViewer3D: React.FC<Props> = ({
         group.add(sprite);
       }
 
-      // Atom Label Sprite
+      // Formal Charge Badge (+1, -1, etc.)
+      if (atom.formalCharge) {
+        const chgCanvas = document.createElement('canvas');
+        chgCanvas.width = 64;
+        chgCanvas.height = 64;
+        const cctx = chgCanvas.getContext('2d');
+        if (cctx) {
+          cctx.beginPath();
+          cctx.arc(32, 32, 28, 0, Math.PI * 2);
+          cctx.fillStyle = atom.formalCharge > 0 ? '#ef4444' : '#3b82f6';
+          cctx.fill();
+          cctx.lineWidth = 4;
+          cctx.strokeStyle = '#ffffff';
+          cctx.stroke();
+          cctx.fillStyle = '#ffffff';
+          cctx.font = 'bold 36px "JetBrains Mono", monospace';
+          cctx.textAlign = 'center';
+          cctx.textBaseline = 'middle';
+          const chgStr = atom.formalCharge > 0 ? (atom.formalCharge === 1 ? '+1' : `+${atom.formalCharge}`) : `${atom.formalCharge}`;
+          cctx.fillText(chgStr, 32, 34);
+        }
+        const chgTex = new THREE.CanvasTexture(chgCanvas);
+        const chgMat = new THREE.SpriteMaterial({ map: chgTex, depthTest: false });
+        const chgSprite = new THREE.Sprite(chgMat);
+        const chgScale = isCompact ? 0.32 : 0.48;
+        chgSprite.scale.set(chgScale, chgScale, 1);
+        chgSprite.position.set(atomPos.x, atomPos.y + r + (isCompact ? 0.22 : 0.35), atomPos.z);
+        group.add(chgSprite);
+      }
+
+      // Atom Label Sprite with size-aware scaling
       if (showLabels && currentMode !== 'spacefill') {
         const labelCanvas = document.createElement('canvas');
         labelCanvas.width = 64;
         labelCanvas.height = 64;
         const ctx = labelCanvas.getContext('2d');
         if (ctx) {
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
           ctx.beginPath();
           ctx.arc(32, 32, 28, 0, Math.PI * 2);
           ctx.fill();
@@ -303,7 +351,8 @@ export const MolecularViewer3D: React.FC<Props> = ({
         const texture = new THREE.CanvasTexture(labelCanvas);
         const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false });
         const sprite = new THREE.Sprite(spriteMat);
-        sprite.scale.set(0.42, 0.42, 1);
+        const labelScale = isCompact ? 0.24 : 0.42;
+        sprite.scale.set(labelScale, labelScale, 1);
         sprite.position.set(atomPos.x, atomPos.y, atomPos.z + r * 0.9);
         group.add(sprite);
       }

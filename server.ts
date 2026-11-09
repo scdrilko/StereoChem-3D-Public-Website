@@ -202,6 +202,46 @@ Feel free to ask any specific question about CIP priority assignments, R/S confi
     }
   });
 
+  // PubChem compound name-to-canonical-SMILES resolver
+  app.get('/api/pubchem/resolve', async (req, res) => {
+    try {
+      const name = ((req.query.name || req.query.query) as string)?.trim();
+      if (!name) {
+        res.status(400).json({ error: 'Name query parameter required' });
+        return;
+      }
+
+      const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(name)}/property/CanonicalSMILES,IsomericSMILES,IUPACName,Title/JSON`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        res.status(response.status).json({ error: `Could not resolve chemical name "${name}" in PubChem.` });
+        return;
+      }
+
+      const data = await response.json();
+      const props = data?.PropertyTable?.Properties?.[0];
+      if (!props) {
+        res.status(404).json({ error: `No compound properties found for "${name}".` });
+        return;
+      }
+
+      const canonicalSmiles = props.IsomericSMILES || props.CanonicalSMILES || props.SMILES || '';
+      if (!canonicalSmiles) {
+        res.status(404).json({ error: `No SMILES representation found for "${name}".` });
+        return;
+      }
+
+      res.json({
+        smiles: canonicalSmiles,
+        name: props.Title || name,
+        iupacName: props.IUPACName || props.Title || name,
+        cid: props.CID,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to resolve compound name via PubChem' });
+    }
+  });
+
   // In development, hook Vite middleware
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
