@@ -89,7 +89,7 @@ export default function App() {
               </span>
             </div>
             <p className="text-[10px] text-cyan-400/90 font-medium tracking-wide hidden sm:block">
-              AI-Powered Stereochemistry Learning Platform
+              3S-Powered Stereochemistry Learning Platform
             </p>
           </div>
         </div>
