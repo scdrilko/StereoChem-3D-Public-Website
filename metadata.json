@@ -1,0 +1,6 @@
+{
+  "name": "StereoChem 3D - AI-Powered Stereochemistry Learning Platform",
+  "description": "Interactive 3D molecular visualization, stereochemistry simulations, CIP priority rules, R/S configurations, enantiomers, and practice exercises for chemistry students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
