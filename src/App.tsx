@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import VisitorCounter from './components/VisitorCounter';
 import { Molecule } from './types/chemistry';
 import { MOLECULES_DATABASE } from './data/molecules';
 
@@ -41,6 +42,7 @@ import {
   PlusCircle,
 } from 'lucide-react';
 import { AddMoleculeModal } from './components/modals/AddMoleculeModal';
+import LegalPage from './components/legal/LegalPage';
 
 export default function App() {
   const [currentSection, setCurrentSection] = useState<string>('home');
@@ -294,8 +296,53 @@ export default function App() {
           {currentSection === 'mcq' && <MCQPracticeSection />}
 
           {currentSection === 'resources' && <LearningResourcesSection />}
+{['copyright', 'disclaimer', 'terms', 'privacy', 'contact'].includes(currentSection) && (
+  <LegalPage
+    page={currentSection as 'copyright' | 'disclaimer' | 'terms' | 'privacy' | 'contact'}
+    onNavigate={handleNavigate}
+  />
+)}
         </main>
       </div>
+      <footer className="border-t border-slate-800 bg-slate-950 px-4 py-8 sm:px-8">
+        <div className="mx-auto max-w-7xl">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="text-lg font-bold text-white">
+                StereoChem 3D
+              </h3>
+              <p className="mt-1 text-sm text-slate-400">
+                3S-Powered Stereochemistry Learning Platform
+              </p>
+            </div>
+
+            <nav className="flex flex-wrap gap-x-5 gap-y-3 text-sm text-slate-400">
+              <button onClick={() => handleNavigate('copyright')} className="hover:text-cyan-400">
+                Copyright
+              </button>
+              <button onClick={() => handleNavigate('disclaimer')} className="hover:text-cyan-400">
+                Disclaimer
+              </button>
+              <button onClick={() => handleNavigate('terms')} className="hover:text-cyan-400">
+                Terms of Service
+              </button>
+              <button onClick={() => handleNavigate('privacy')} className="hover:text-cyan-400">
+                Privacy Policy
+              </button>
+              <button onClick={() => handleNavigate('contact')} className="hover:text-cyan-400">
+                Contact
+              </button>
+            </nav>
+          </div>
+
+          <div className="mt-6 border-t border-slate-800 pt-5 text-center text-xs text-slate-500">
+            © 2026 StereoChem 3D. All rights reserved.
+            <span className="mx-2">|</span>
+            Educational platform for chemistry learning.
+          </div>
+<VisitorCounter />
+        </div>
+      </footer>
     </div>
   );
 }
